@@ -1,13 +1,13 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='bee-rpc',
-    version='0.0.4',
+    name='bee-rpc-over-grpc',
+    version='0.0.0',
 
-    url='https://github.com/bee-rpc/bee-rpc-over-grpc-py.git',
+    url='https://github.com/bee-rpc-protocol/bee-rpc-over-grpc-py.git',
 
     py_modules=[
-        'bee-rpc'
+        'bee_rpc'
     ],
     install_requires=[
         'grpcio==1.56.0',
