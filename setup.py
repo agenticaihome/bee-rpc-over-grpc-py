@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='bee-rpc-over-grpc',
+    name='bee-rpc',
     version='0.0.0',
 
     url='https://github.com/bee-rpc-protocol/bee-rpc-over-grpc-py.git',
