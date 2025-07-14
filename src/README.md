@@ -59,6 +59,11 @@ class BlockBuilder:
         # Use the WBP object and the list of blocks to generate byte chunks
         # This is used to save a modified WBP
         pass
+
+    def build_multiblock_fractal(self, wbp_object, block_list):
+        # Use the WBP object and the list of blocks to generate byte chunks
+        # This is used to save a modified WBP
+        pass
 ```
 
 ### Metadata File Name

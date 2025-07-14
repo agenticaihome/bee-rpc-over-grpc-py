@@ -391,6 +391,142 @@ def build_multiblock(
     return object_id, cache_dir
 
 
+def get_recursive_block_length(block_id: str, cache: Dict[str, int]) -> int:
+    if block_id in cache:
+        if cache[block_id] == -1:
+            raise Exception(f'Detected recursive loop when processing block {block_id}')
+        return cache[block_id]
+
+    cache[block_id] = -1
+
+    block_path = Enviroment.block_dir + block_id
+    if not os.path.exists(block_path):
+        raise Exception(f'gRPCbb: Block not found: {block_path}')
+
+    try:
+        with open(block_path, 'rb') as f:
+            content = f.read()
+
+        inner_object = buffer_pb2.Buffer()
+        inner_object.ParseFromString(content)
+
+        container = {}
+        search_on_message(inner_object, [], 0, [], container)
+        tree = create_lengths_tree(container)
+
+        inner_lengths = compute_real_lengths_recursive(tree, content, cache)
+        total_real_length = sum(
+            rl[0] + len(encode_bytes(rl[0])) + 1 for rl in inner_lengths.values()
+        )
+
+    except DecodeError:
+        total_real_length = os.path.getsize(block_path)
+
+    cache[block_id] = total_real_length
+    return total_real_length
+
+
+def compute_real_lengths_recursive(tree: Dict[int, Union[Dict, str]], buffer: bytes, cache: Dict[str, int]) -> Dict[int, Tuple[int, int, bool]]:
+    def traverse_tree(internal_tree: Dict, internal_buffer: bytes, initial_total_length: int) -> Tuple[int, Dict[int, Tuple[int, int, bool]]]:
+        real_lengths: Dict[int, Tuple[int, int, bool]] = {}
+        total_tree_length: int = 0
+        total_block_length: int = 0
+
+        for key, value in internal_tree.items():
+            if isinstance(value, dict):
+                initial_length = get_position_length(key, internal_buffer)
+                subtree_length, sub_lengths = traverse_tree(value, internal_buffer, initial_length)
+                real_lengths[key] = (subtree_length, initial_length, False)
+                real_lengths.update(sub_lengths)
+                total_tree_length += subtree_length + len(encode_bytes(subtree_length)) + 1
+                total_block_length += initial_length + len(encode_bytes(initial_length)) + 1
+            else:
+                b = buffer_pb2.Buffer.Block()
+                h = buffer_pb2.Buffer.Block.Hash()
+                h.type = Enviroment.hash_type
+                h.value = bytes.fromhex(value)
+                b.hashes.append(h)
+                b_length = len(b.SerializeToString())
+
+                real_length = get_recursive_block_length(value, cache)
+                real_lengths[key] = (real_length, b_length, True)
+                total_tree_length += real_length + len(encode_bytes(real_length)) + 1
+                total_block_length += b_length + len(encode_bytes(b_length)) + 1
+
+        if initial_total_length < total_block_length:
+            raise Exception('Error on compute real lengths: block length cannot be greater than total length',
+                            initial_total_length, total_block_length)
+
+        total_tree_length += initial_total_length - total_block_length
+        return total_tree_length, real_lengths
+
+    return dict(sorted(traverse_tree(tree, buffer, len(buffer))[1].items()))
+
+
+def build_multiblock_fractal(
+        pf_object_with_block_pointers: Any,
+        blocks: List[bytes]
+) -> Tuple[bytes, str]:
+    container: Dict[str, List[List[int]]] = {}
+    search_on_message(
+        message=pf_object_with_block_pointers,
+        pointers=[],
+        initial_position=0,
+        blocks=blocks,
+        container=container
+    )
+
+    tree: Dict[int, Union[Dict, str]] = create_lengths_tree(
+        pointer_container=container
+    )
+
+    real_lengths: Dict[int, Tuple[int, int, bool]] = compute_real_lengths_recursive(
+        tree=tree,
+        buffer=pf_object_with_block_pointers.SerializeToString(),
+        cache={}
+    )
+
+    new_buff: List[bytes] = generate_buffer(
+        buffer=pf_object_with_block_pointers.SerializeToString(),
+        lengths=real_lengths
+    )
+
+    object_id: bytes = generate_id(
+        buffers=new_buff,
+        blocks=blocks
+    )
+
+    cache_dir: str = generate_random_dir() + '/'
+    _json: List[Union[int, Tuple[str, List[int]]]] = []
+
+    container_real_lengths: List[Tuple[str, List[int]]] = []
+    search_on_message_real(
+        message=pf_object_with_block_pointers,
+        pointers=[],
+        initial_position=0,
+        real_initial_position=0,
+        blocks=blocks,
+        container=container_real_lengths,
+        real_lengths=real_lengths
+    )
+
+    for i, (b1, b2) in enumerate(zip_longest(new_buff, container_real_lengths)):
+        _json.append(i + 1)
+        with open(cache_dir + str(i + 1), 'wb') as f:
+            f.write(b1)
+
+        if b2:
+            _json.append((b2[0], b2[1]))
+
+    with open(cache_dir + METADATA_FILE_NAME, 'w') as f:
+        json.dump(_json, f)
+
+    with open(cache_dir + WITHOUT_BLOCK_POINTERS_FILE_NAME, 'wb') as f:
+        f.write(pf_object_with_block_pointers.SerializeToString())
+
+    return object_id, cache_dir
+
+
 def create_block(file_path: str, copy: bool = False) -> Tuple[bytes, buffer_pb2.Buffer.Block]:
     file_hash: str = get_file_hash(file_path=file_path)
     if not block_exists(block_id=file_hash):
