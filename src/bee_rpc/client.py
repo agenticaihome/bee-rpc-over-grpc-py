@@ -51,7 +51,19 @@ def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
     except DecodeError:
         return False
 
-    block_id: typing.Optional[str] = get_hash_from_block(block=block, internal_block=True)
+    # Resolve the block id. Blocks produced by create_block()/build_multiblock()
+    # carry a single hash of type Enviroment.hash_type (see block_builder.py), which
+    # is what every other get_hash_from_block() call site resolves (internal_block=False).
+    # Only this function used internal_block=True, which matches a single hash of the
+    # empty type (b'') exclusively — a shape nothing in the library ever produces. As a
+    # result copy_block_if_exists() always returned None here for real block pointers,
+    # returned False, and callers silently wrote the 36-byte pointer as file content,
+    # corrupting large binaries. Try the internal (type=b'') form first for backwards
+    # compatibility, then fall back to the standard hash-typed form.
+    block_id: typing.Optional[str] = (
+        get_hash_from_block(block=block, internal_block=True)
+        or get_hash_from_block(block=block, internal_block=False)
+    )
     if not block_id:
         return False
 
