@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import itertools
 import json
@@ -67,14 +68,46 @@ def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
     if not block_id:
         return False
 
+    # Reconstruct the block to a temporary sibling file, verify its integrity,
+    # then publish it atomically. Historically this streamed read_block() straight
+    # into `directory` and returned True unconditionally, so a block that was
+    # truncated/corrupt at rest (torn write, interrupted store, rm race) produced
+    # a short file with NO error — silently corrupting large binaries (e.g. an ELF
+    # whose body is truncated -> "invalid ELF header" at exec). Fail closed
+    # instead: on any read error or hash mismatch, leave `directory` untouched and
+    # return False so callers can raise rather than write garbage.
+    #
+    # Verification applies to single-file blocks, whose id is the sha3_256 of their
+    # raw content (see block_builder.create_block / utils.get_file_hash). Multiblock
+    # *directory* blocks have a composite id that is not the flat-content hash, so
+    # they keep the previous stream-through behaviour (now atomic, still the
+    # pre-existing "TODO support copy of multiblocks blocks" path).
+    _exists, is_multiblock = block_exists(block_id=block_id, is_dir=True)
+
+    tmp = directory + '.beeblk-' + str(randint(0, MAX_DIR))
     try:
-        with open(directory, 'wb') as file:
-            for data in read_block(
-                    block_id=block_id
-            ):
+        hasher = hashlib.sha3_256()
+        with open(tmp, 'wb') as file:
+            for data in read_block(block_id=block_id):
                 file.write(data)
+                hasher.update(data)
+            file.flush()
+            os.fsync(file.fileno())
+
+        if not is_multiblock and hasher.hexdigest() != block_id:
+            raise Exception(
+                'gRPCbb: block reconstruction hash mismatch for ' + block_id
+                + ' (got ' + hasher.hexdigest() + ') — refusing to write corrupt content.'
+            )
+
+        os.replace(tmp, directory)
         return True
     except Exception as e:  # TODO control only Exception('gRPCbb: Error reading block.')
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
         return False
 
 
