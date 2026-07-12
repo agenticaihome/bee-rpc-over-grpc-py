@@ -1,4 +1,5 @@
 import gc
+import hashlib
 import json
 import os
 import shutil
@@ -83,10 +84,39 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
         shutil.rmtree(directory)
 
 
+def _verify_single_file_block(path: str, block_id: str) -> None:
+    """Fail closed before a block's bytes enter a serialized stream.
+
+    A single-file block is content-addressed: its id is the sha3_256 of its bytes
+    (see block_builder.create_block / utils.get_file_hash). If the block file is
+    present but truncated/corrupt at rest (torn write, interrupted copy, a race with
+    the documented `rm -rf __block__` cleanup), read_file_by_chunks() would stream
+    the short/empty content into the buffer with NO error — producing a `.bee`/stream
+    that carries the Buffer.Block marker but little or no payload ("has Block() but no
+    blocks"). Verify the content hash up front and raise instead of emitting garbage.
+    """
+    hasher = hashlib.sha3_256()
+    with open(path, 'rb') as f:
+        while True:
+            piece = f.read(CHUNK_SIZE)
+            if not piece:
+                break
+            hasher.update(piece)
+    if hasher.hexdigest() != block_id:
+        raise Exception(
+            'gRPCbb: block content hash mismatch for ' + block_id
+            + ' (got ' + hasher.hexdigest() + ', ' + str(os.path.getsize(path))
+            + ' bytes) — refusing to serialize a corrupt/truncated block.'
+        )
+
+
 def read_block(block_id: str, debug: Callable[[str], None] = lambda s: None) -> Generator[Union[bytes, buffer_pb2.Buffer.Block], None, None]:
     b, d = block_exists(block_id=block_id, is_dir=True, debug=debug)
     debug(f"Reading block {block_id}. block exists -> {b, d}")
     if b and not d:
+        # Verify integrity before yielding any bytes; a bad block must abort the
+        # stream, not silently produce a payload-less Block() marker.
+        _verify_single_file_block(Enviroment.block_dir + block_id, block_id)
         yield from read_file_by_chunks(filename=Enviroment.block_dir + block_id)
 
     elif d:
