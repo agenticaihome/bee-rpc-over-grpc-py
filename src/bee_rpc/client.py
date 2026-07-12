@@ -128,7 +128,26 @@ def copy_to_block_dir(file_hash: str, file_path: str) -> bool:
     if not block_exists(block_id=file_hash) and os.path.isfile(file_path):
         try:
             destination_path = os.path.join(Enviroment.block_dir, file_hash)
-            shutil.copyfile(file_path, destination_path)
+            # Copy to a temp sibling, fsync, then atomically rename into place. A
+            # plain shutil.copyfile() straight to the content-addressed path leaves a
+            # TRUNCATED block there if the process dies mid-copy (or the disk fills),
+            # and a truncated block later serializes as a payload-less Block(). The
+            # temp+fsync+os.replace makes the block appear only once it is complete
+            # and durable.
+            tmp = destination_path + '.tmp-' + str(randint(0, MAX_DIR))
+            try:
+                with open(file_path, 'rb') as src, open(tmp, 'wb') as dst:
+                    shutil.copyfileobj(src, dst, CHUNK_SIZE)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                os.replace(tmp, destination_path)
+            except BaseException:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                raise
             return True
         except Exception as e:
             raise Exception('gRPCbb error creating block, file could not be moved: ' + str(e))
