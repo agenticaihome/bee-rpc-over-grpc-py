@@ -84,11 +84,28 @@ def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
     # pre-existing "TODO support copy of multiblocks blocks" path).
     _exists, is_multiblock = block_exists(block_id=block_id, is_dir=True)
 
+    # Reconstruct the block's flat content. Single-file blocks stream directly via
+    # read_block(). Multiblock (directory) blocks are flattened with
+    # read_multiblock_directory(ignore_blocks=True), which walks the block's _.json,
+    # recursively rehydrates its sub-blocks (each single-file sub-block hash-verified
+    # in read_block) and yields ONLY bytes. read_block() itself cannot flatten a
+    # directory block — its dir branch uses ignore_blocks=False and emits
+    # Buffer.Block marker objects, which aren't writable bytes; that is why
+    # multiblock blocks previously fell into the except below and returned False
+    # (the pre-existing "TODO support copy of multiblocks blocks").
+    if is_multiblock:
+        source = read_multiblock_directory(
+            directory=Enviroment.block_dir + block_id,
+            ignore_blocks=True,
+        )
+    else:
+        source = read_block(block_id=block_id)
+
     tmp = directory + '.beeblk-' + str(randint(0, MAX_DIR))
     try:
         hasher = hashlib.sha3_256()
         with open(tmp, 'wb') as file:
-            for data in read_block(block_id=block_id):
+            for data in source:
                 file.write(data)
                 hasher.update(data)
             file.flush()
