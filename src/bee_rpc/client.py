@@ -21,7 +21,8 @@ from bee_rpc.utils import Enviroment, MAX_DIR, Signal, EmptyBufferException, Dir
 ## Block driver ##
 def contain_blocks(message: Message) -> bool:
     for field, value in message.ListFields():
-        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE:
+        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE \
+                and not field.message_type.GetOptions().map_entry:
             for element in value:
                 if contain_blocks(element):
                     return True

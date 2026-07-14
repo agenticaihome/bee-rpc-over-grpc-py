@@ -74,7 +74,8 @@ def search_on_message_real(
     position: int = initial_position
     real_position: int = real_initial_position
     for field, value in message.ListFields():
-        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE:
+        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE \
+                and not field.message_type.GetOptions().map_entry:
             for element in value:
                 position += 1
                 if position not in real_lengths.keys():
@@ -168,7 +169,8 @@ def search_on_message(
        """
     position: int = initial_position
     for field, value in message.ListFields():
-        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE:
+        if field.label == FieldDescriptor.LABEL_REPEATED and field.type == FieldDescriptor.TYPE_MESSAGE \
+                and not field.message_type.GetOptions().map_entry:
             for element in value:
                 search_on_message(
                     message=element,
