@@ -73,12 +73,12 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
                 debug("- yielding block init")
                 yield block
                 debug(f"yielded block init")
-                yield from read_block(block_id=block_id, debug=debug)
+                yield from read_block(block_id=block_id, debug=debug, ignore_blocks=ignore_blocks)
                 debug("- yielding block end")
                 yield block
                 debug(f"yielded block end")
             else:
-                yield from read_block(block_id=block_id, debug=debug)
+                yield from read_block(block_id=block_id, debug=debug, ignore_blocks=ignore_blocks)
 
     if delete_directory:
         shutil.rmtree(directory)
@@ -110,7 +110,16 @@ def _verify_single_file_block(path: str, block_id: str) -> None:
         )
 
 
-def read_block(block_id: str, debug: Callable[[str], None] = lambda s: None) -> Generator[Union[bytes, buffer_pb2.Buffer.Block], None, None]:
+def read_block(block_id: str, debug: Callable[[str], None] = lambda s: None, ignore_blocks: bool = True) -> Generator[Union[bytes, buffer_pb2.Buffer.Block], None, None]:
+    """Stream a block's content, whichever shape it is stored in.
+
+    `ignore_blocks` carries the caller's framing choice all the way down. It used
+    to stop here: a block that is itself a multiblock directory was always
+    expanded with ignore_blocks=False, so a caller asking for a flat byte stream
+    still got `Buffer.Block` markers back from the nested level -- objects, not
+    bytes -- and had to filter them out to write or hash the result. The bytes
+    were right once filtered, but no caller could take the contract at its word.
+    """
     b, d = block_exists(block_id=block_id, is_dir=True, debug=debug)
     debug(f"Reading block {block_id}. block exists -> {b, d}")
     if b and not d:
@@ -122,7 +131,7 @@ def read_block(block_id: str, debug: Callable[[str], None] = lambda s: None) -> 
     elif d:
         yield from read_multiblock_directory(
             directory=Enviroment.block_dir + block_id,
-            ignore_blocks=False
+            ignore_blocks=ignore_blocks
         )
 
     else:

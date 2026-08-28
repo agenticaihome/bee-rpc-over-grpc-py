@@ -11,8 +11,9 @@ from google.protobuf.descriptor import FieldDescriptor
 
 from bee_rpc.client import generate_random_dir, block_exists, move_to_block_dir, copy_to_block_dir, \
     get_hash_from_block
+from bee_rpc.reader import read_multiblock_directory
 from bee_rpc.utils import Enviroment, CHUNK_SIZE, METADATA_FILE_NAME, WITHOUT_BLOCK_POINTERS_FILE_NAME, \
-    get_file_hash, create_lengths_tree, encode_bytes
+    get_file_hash, create_lengths_tree, encode_bytes, get_expanded_block_length
 
 
 def is_block(bytes_obj: bytes, blocks: List[bytes]) -> bool:
@@ -52,11 +53,16 @@ def get_hash(block: buffer_pb2.Buffer.Block) -> str:
 
 
 def get_block_length(block_id: str) -> int:
-    if os.path.isfile(Enviroment.block_dir + block_id):
-        return os.path.getsize(Enviroment.block_dir + block_id)
-    elif os.path.isdir(Enviroment.block_dir + block_id):
-        raise Exception('gRPCbb: error on compute_real_lengths, multiblock blocks dont supported.'
-                        + Enviroment.block_dir + block_id)
+    """The length a pointer to this block expands to, whichever shape it is stored in.
+
+    A referenced block used to have to be a single file: a *multiblock directory*
+    block was refused outright, which is what kept an object from referencing one
+    (and so kept a large sub-object -- a whole container filesystem, say -- from
+    being stored as one block of its own instead of inlined). Both shapes are
+    measurable; the directory one is the sum of its own expansion.
+    """
+    if os.path.isfile(Enviroment.block_dir + block_id) or os.path.isdir(Enviroment.block_dir + block_id):
+        return get_expanded_block_length(block_name=block_id)
     else:
         raise Exception('gRPCbb: error on compute_real_lengths, block does not in block registry. '
                         + Enviroment.block_dir + block_id)
@@ -312,13 +318,21 @@ def generate_id(buffers: List[bytes], blocks: List[bytes]) -> bytes:
         if buffer:
             hash_id.update(buffer)
         if block:
-            with BufferedReader(open(Enviroment.block_dir + block.hex(), 'rb')) as f:
-                while True:
-                    f.flush()
-                    piece: bytes = f.read(CHUNK_SIZE)
-                    if len(piece) == 0:
-                        break
+            block_path: str = Enviroment.block_dir + block.hex()
+            if os.path.isdir(block_path):
+                # A multiblock directory block has no single file to read: what it
+                # contributes to the id is the stream it expands to, the same bytes
+                # a reader would see in its place.
+                for piece in read_multiblock_directory(directory=block_path, ignore_blocks=True):
                     hash_id.update(piece)
+            else:
+                with BufferedReader(open(block_path, 'rb')) as f:
+                    while True:
+                        f.flush()
+                        piece: bytes = f.read(CHUNK_SIZE)
+                        if len(piece) == 0:
+                            break
+                        hash_id.update(piece)
     return hash_id.digest()
 
 
@@ -404,6 +418,14 @@ def get_recursive_block_length(block_id: str, cache: Dict[str, int]) -> int:
     block_path = Enviroment.block_dir + block_id
     if not os.path.exists(block_path):
         raise Exception(f'gRPCbb: Block not found: {block_path}')
+
+    if os.path.isdir(block_path):
+        # A multiblock directory block states its own structure in its `_.json`;
+        # there is nothing to open and re-parse, and open() would raise
+        # IsADirectoryError past the DecodeError guard below.
+        total_real_length = get_expanded_block_length(block_name=block_id)
+        cache[block_id] = total_real_length
+        return total_real_length
 
     try:
         with open(block_path, 'rb') as f:

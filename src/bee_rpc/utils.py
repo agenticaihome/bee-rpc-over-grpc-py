@@ -175,10 +175,42 @@ def get_varint_at_position(position, file_list) -> int:
         return result
 
 
-def get_pruned_block_length(block_name: str) -> int:
-    return os.path.getsize(os.path.join(Enviroment.block_dir, block_name)) - BLOCK_LENGTH
+def get_expanded_block_length(block_name: str, _seen: typing.Optional[typing.Set[str]] = None) -> int:
+    """How many bytes `reader.read_block` emits for this block.
 
-def getsize(path: str) -> int:
+    A block is stored in one of two shapes, and the length differs between them:
+    a single file, whose content is streamed verbatim, or a *multiblock
+    directory* with its own `_.json`, whose content is the expansion of that
+    directory (its parts, plus its sub-blocks expanded the same way, to any
+    depth). Measuring a directory block with `os.path.getsize` returns the size
+    of the dirent -- a couple of hundred bytes standing in for however much
+    content the block actually holds -- so every caller that has to know how far
+    a pointer expands must come through here.
+    """
+    if _seen is None:
+        _seen = set()
+    if block_name in _seen:
+        raise Exception(f'bee-rpc: detected recursive loop when measuring block {block_name}')
+
+    path = os.path.join(Enviroment.block_dir, block_name)
+    if not os.path.isdir(path):
+        return os.path.getsize(path)
+
+    # `_seen` is the recursion *stack*, not a set of everything already measured:
+    # deduplicated storage means one block is legitimately referenced many times
+    # from the same object, and only a block that contains itself is a loop.
+    _seen.add(block_name)
+    try:
+        return getsize(path, _seen=_seen)
+    finally:
+        _seen.discard(block_name)
+
+
+def get_pruned_block_length(block_name: str) -> int:
+    """What a block pointer adds beyond the BLOCK_LENGTH bytes of the pointer itself."""
+    return get_expanded_block_length(block_name=block_name) - BLOCK_LENGTH
+
+def getsize(path: str, _seen: typing.Optional[typing.Set[str]] = None) -> int:
     if not os.path.exists(path): 
         return 0
     
@@ -197,7 +229,11 @@ def getsize(path: str) -> int:
                     _msg = f"'bee-rpc error on block metadata file ( _.json ).' for block {block_id} on utils.getsize"
                     raise Exception(_msg)
                 
-                total_size += get_pruned_block_length(block_name=block_id)
+                # The pointer is not stored in the parts, so the whole expansion
+                # of the sub-block is what this reference contributes -- not
+                # `get_pruned_block_length`, which deliberately discounts the
+                # BLOCK_LENGTH bytes a pointer occupies where one is present.
+                total_size += get_expanded_block_length(block_name=block_id, _seen=_seen)
                 
         return total_size
     

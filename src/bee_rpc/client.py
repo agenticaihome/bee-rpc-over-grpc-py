@@ -44,7 +44,6 @@ def contain_blocks(message: Message) -> bool:
 
 
 def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
-    # TODO support copy of multiblocks blocks. Now it will create a single file block.
     try:
         block = buffer_pb2.Buffer.Block()
         with warnings.catch_warnings():
@@ -79,28 +78,16 @@ def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
     # return False so callers can raise rather than write garbage.
     #
     # Verification applies to single-file blocks, whose id is the sha3_256 of their
-    # raw content (see block_builder.create_block / utils.get_file_hash). Multiblock
-    # *directory* blocks have a composite id that is not the flat-content hash, so
-    # they keep the previous stream-through behaviour (now atomic, still the
-    # pre-existing "TODO support copy of multiblocks blocks" path).
+    # raw content (see block_builder.create_block / utils.get_file_hash). A
+    # multiblock *directory* block has a composite id that is not the hash of its
+    # flat content, so there is nothing to compare its reconstruction against.
     _exists, is_multiblock = block_exists(block_id=block_id, is_dir=True)
 
-    # Reconstruct the block's flat content. Single-file blocks stream directly via
-    # read_block(). Multiblock (directory) blocks are flattened with
-    # read_multiblock_directory(ignore_blocks=True), which walks the block's _.json,
-    # recursively rehydrates its sub-blocks (each single-file sub-block hash-verified
-    # in read_block) and yields ONLY bytes. read_block() itself cannot flatten a
-    # directory block — its dir branch uses ignore_blocks=False and emits
-    # Buffer.Block marker objects, which aren't writable bytes; that is why
-    # multiblock blocks previously fell into the except below and returned False
-    # (the pre-existing "TODO support copy of multiblocks blocks").
-    if is_multiblock:
-        source = read_multiblock_directory(
-            directory=Enviroment.block_dir + block_id,
-            ignore_blocks=True,
-        )
-    else:
-        source = read_block(block_id=block_id)
+    # Reconstruct the block's flat content. read_block() flattens both shapes: a
+    # single-file block streams verbatim (hash-verified there), and a multiblock
+    # directory block walks its own _.json and recursively rehydrates its
+    # sub-blocks, to any depth, yielding ONLY bytes.
+    source = read_block(block_id=block_id)
 
     tmp = directory + '.beeblk-' + str(randint(0, MAX_DIR))
     try:
