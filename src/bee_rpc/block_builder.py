@@ -312,13 +312,26 @@ def generate_buffer(buffer: bytes, lengths: Dict[int, Tuple[int, int, bool]]) ->
     return list_of_bytes + [buffer[i:]]
 
 
-def generate_id(buffers: List[bytes], blocks: List[bytes]) -> bytes:
+def generate_id(buffers: List[bytes], block_ids: List[str]) -> bytes:
+    """The object's id: the hash of the stream it expands to.
+
+    Parts and blocks alternate in the order the metadata file records them, so
+    `block_ids` must arrive in that same order and with the multiplicity the
+    object actually has -- which is what `search_on_message_real` collects.
+
+    This used to hash the caller's `blocks` list instead. That list is
+    deduplicated and ordered however the caller happened to gather it, so the id
+    came out right only when it coincided with the order the blocks appear in
+    the object and no block was referenced twice; otherwise it named content
+    that does not exist. Nothing in the library reads the id back, so the
+    mismatch surfaced only in a caller that content-addresses by it.
+    """
     hash_id = sha3_256()
-    for buffer, block in zip_longest(buffers, blocks):
+    for buffer, block_id in zip_longest(buffers, block_ids):
         if buffer:
             hash_id.update(buffer)
-        if block:
-            block_path: str = Enviroment.block_dir + block.hex()
+        if block_id:
+            block_path: str = Enviroment.block_dir + block_id
             if os.path.isdir(block_path):
                 # A multiblock directory block has no single file to read: what it
                 # contributes to the id is the stream it expands to, the same bytes
@@ -369,16 +382,6 @@ def build_multiblock(
         lengths=real_lengths
     )
 
-    object_id: bytes = generate_id(
-        buffers=new_buff,
-        blocks=blocks
-    )
-    cache_dir: str = generate_random_dir() + '/'
-    _json: List[Union[
-        int,
-        Tuple[str, List[int]]
-    ]] = []
-
     container_real_lengths: List[Tuple[str, List[int]]] = []
     search_on_message_real(
         message=pf_object_with_block_pointers,
@@ -389,6 +392,18 @@ def build_multiblock(
         container=container_real_lengths,
         real_lengths=real_lengths
     )
+
+    # Hashed from the same two lists the metadata file below is written from, so
+    # the id always describes the stream this object expands to.
+    object_id: bytes = generate_id(
+        buffers=new_buff,
+        block_ids=[block_id for block_id, _ in container_real_lengths]
+    )
+    cache_dir: str = generate_random_dir() + '/'
+    _json: List[Union[
+        int,
+        Tuple[str, List[int]]
+    ]] = []
 
     for i, (b1, b2) in enumerate(zip_longest(new_buff, container_real_lengths)):
         _json.append(i + 1)
@@ -515,14 +530,6 @@ def build_multiblock_fractal(
         lengths=real_lengths
     )
 
-    object_id: bytes = generate_id(
-        buffers=new_buff,
-        blocks=blocks
-    )
-
-    cache_dir: str = generate_random_dir() + '/'
-    _json: List[Union[int, Tuple[str, List[int]]]] = []
-
     container_real_lengths: List[Tuple[str, List[int]]] = []
     search_on_message_real(
         message=pf_object_with_block_pointers,
@@ -533,6 +540,16 @@ def build_multiblock_fractal(
         container=container_real_lengths,
         real_lengths=real_lengths
     )
+
+    # Hashed from the same two lists the metadata file below is written from, so
+    # the id always describes the stream this object expands to.
+    object_id: bytes = generate_id(
+        buffers=new_buff,
+        block_ids=[block_id for block_id, _ in container_real_lengths]
+    )
+
+    cache_dir: str = generate_random_dir() + '/'
+    _json: List[Union[int, Tuple[str, List[int]]]] = []
 
     for i, (b1, b2) in enumerate(zip_longest(new_buff, container_real_lengths)):
         _json.append(i + 1)
