@@ -1,4 +1,3 @@
-import hashlib
 import inspect
 import itertools
 import json
@@ -77,8 +76,9 @@ def copy_block_if_exists(buffer: bytes, directory: str,
     # instead: on any read error or hash mismatch, leave `directory` untouched and
     # return False so callers can raise rather than write garbage.
     #
-    # Verification applies to single-file blocks, whose id is the sha3_256 of their
-    # raw content (see block_builder.create_block / utils.get_file_hash). A
+    # Verification applies to single-file blocks, whose id is their raw content under
+    # this node's block-addressing algorithm (see block_builder.create_block /
+    # utils.get_file_hash and Enviroment.hash_factory). A
     # multiblock *directory* block has a composite id that is not the hash of its
     # flat content, so there is nothing to compare its reconstruction against.
     _exists, is_multiblock = block_exists(block_id=block_id, is_dir=True)
@@ -91,7 +91,7 @@ def copy_block_if_exists(buffer: bytes, directory: str,
 
     tmp = directory + '.beeblk-' + str(randint(0, MAX_DIR))
     try:
-        hasher = hashlib.sha3_256()
+        hasher = Enviroment.hash_factory()
         with open(tmp, 'wb') as file:
             for data in source:
                 file.write(data)

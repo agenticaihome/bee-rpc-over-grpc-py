@@ -169,8 +169,8 @@ class NestedBlockOverTheWire(unittest.TestCase):
                 file_list.append(os.path.join(self.blocks, e[0]))
                 blocks.setdefault(e[0], []).append(e[1])
                 pointer_lengths[e[1][-1]] = block_pointer_length(block_id=e[0])
-        self.assertTrue(validate_lengths_tree(blocks=blocks, file_list=file_list,
-                                              pointer_lengths=pointer_lengths))
+        validate_lengths_tree(blocks=blocks, file_list=file_list,
+                              pointer_lengths=pointer_lengths)   # raises if it does not
 
         generate_wbp_file(received)
         self.assertTrue(os.path.isfile(

@@ -1,5 +1,4 @@
 import gc
-import hashlib
 import json
 import os
 import shutil
@@ -86,7 +85,7 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
                 # coordinate systems that no length arithmetic can make sense of.
                 # Streaming flat keeps the nesting an implementation detail of
                 # whoever stores the block: the bytes are the same either way, and a
-                # directory block's id is the sha3_256 of exactly this expansion
+                # directory block's id is the hash of exactly this expansion
                 # (block_builder.generate_id), so the receiver can verify it.
                 yield from read_block(block_id=block_id, debug=debug, ignore_blocks=True)
                 debug("- yielding block end")
@@ -102,15 +101,16 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
 def _verify_single_file_block(path: str, block_id: str) -> None:
     """Fail closed before a block's bytes enter a serialized stream.
 
-    A single-file block is content-addressed: its id is the sha3_256 of its bytes
-    (see block_builder.create_block / utils.get_file_hash). If the block file is
+    A single-file block is content-addressed: its id is its bytes under the algorithm
+    this node addresses blocks by (see block_builder.create_block /
+    utils.get_file_hash and Enviroment.hash_factory). If the block file is
     present but truncated/corrupt at rest (torn write, interrupted copy, a race with
     the documented `rm -rf __block__` cleanup), read_file_by_chunks() would stream
     the short/empty content into the buffer with NO error — producing a `.bee`/stream
     that carries the Buffer.Block marker but little or no payload ("has Block() but no
     blocks"). Verify the content hash up front and raise instead of emitting garbage.
     """
-    hasher = hashlib.sha3_256()
+    hasher = Enviroment.hash_factory()
     with open(path, 'rb') as f:
         while True:
             piece = f.read(CHUNK_SIZE)

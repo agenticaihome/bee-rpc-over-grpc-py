@@ -1,7 +1,6 @@
 import json
 import os.path
 import warnings
-from hashlib import sha3_256
 from io import BufferedReader
 from itertools import zip_longest
 from typing import Any, List, Dict, Optional, Sequence, Union, Tuple
@@ -370,7 +369,7 @@ def generate_id(buffers: List[bytes], block_ids: List[str]) -> bytes:
     that does not exist. Nothing in the library reads the id back, so the
     mismatch surfaced only in a caller that content-addresses by it.
     """
-    hash_id = sha3_256()
+    hash_id = Enviroment.hash_factory()
     for buffer, block_id in zip_longest(buffers, block_ids):
         if buffer:
             hash_id.update(buffer)

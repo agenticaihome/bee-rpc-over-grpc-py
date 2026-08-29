@@ -109,8 +109,9 @@ class StoredAndOnTheWire(unittest.TestCase):
         self.blocks = os.path.join(self.root, "blocks")
         os.makedirs(self.blocks)
         modify_env(cache_dir=self.root + os.sep, block_dir=self.blocks + os.sep)
-        self._original_hash_type = Enviroment.hash_type
-        self.addCleanup(setattr, Enviroment, "hash_type", self._original_hash_type)
+        # Both are global; whatever a test selects, put them back.
+        self.addCleanup(setattr, Enviroment, "hash_type", Enviroment.hash_type)
+        self.addCleanup(setattr, Enviroment, "hash_factory", Enviroment.hash_factory)
         self._n = 0
 
     def _file_block(self, data: bytes):
@@ -214,16 +215,15 @@ class StoredAndOnTheWire(unittest.TestCase):
         # `BLOCK_LENGTH = 36` was the length of one encoding of one digest size.
         # Neither is fixed: the same block is 70 bytes of pointer with its type
         # spelled out, and a longer digest is longer again.
-        Enviroment.hash_type = hashlib.sha3_512(b"").digest()
-        block_id = hashlib.sha3_512(b"payload").hexdigest()
-        with open(os.path.join(self.blocks, block_id), "wb") as f:
-            f.write(os.urandom(9000))
-        self.assertEqual(block_pointer_length(block_id, omit_types=True), 68)
-        self.assertEqual(block_pointer_length(block_id), 135)
+        modify_env(hash_factory=hashlib.sha3_512)
+        os.makedirs(self.blocks, exist_ok=True)            # the switch drops the registry
+        block_hash, pointer = self._file_block(os.urandom(9000))
+        self.assertEqual(len(block_hash), 64)
+        self.assertEqual(block_pointer_length(block_hash, omit_types=True), 68)
+        self.assertEqual(block_pointer_length(block_hash), 135)
 
-        pointer = block_pointer(block_id=block_id).SerializeToString()
         _, directory = block_builder.build_multiblock(
-            self._object_with(pointer), blocks=[bytes.fromhex(block_id)])
+            self._object_with(pointer.SerializeToString()), blocks=[block_hash])
         generate_wbp_file(directory)                       # used to raise here
 
         stored = buffer_pb2.Buffer()

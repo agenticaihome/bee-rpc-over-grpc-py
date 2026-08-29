@@ -22,7 +22,11 @@ class EmptyBufferException(Exception):
 
 
 class HashTypeError(Exception):
-    """A pointer's hash carries no type and none can be deduced for its index."""
+    """A hash type is unknown to this node, or none can be deduced for a hash's index."""
+
+
+class LengthsValidationError(Exception):
+    """A stored object's metadata does not describe the bytes it sits on."""
 
 
 class Dir(object):
@@ -43,8 +47,8 @@ class MemManager(object):
 
 
 def get_file_hash(file_path: str) -> str:
-    # Create a hash object
-    hash = hashlib.sha3_256()
+    # Create a hash object, of whatever algorithm this node addresses blocks by.
+    hash = Enviroment.hash_factory()
     # Open the file in binary mode
     with open(file_path, 'rb') as file:
         # Read the contents of the file in chunks
@@ -84,6 +88,65 @@ class Signal():
                 self.condition.wait()
 
 
+## Hash algorithms ##
+
+# A hash type *is* the algorithm applied to the empty input, so an algorithm and the
+# identifier written into pointers for it are never two independent settings to keep
+# in step. `Enviroment.hash_type` used to be a bare hex literal beside four separate
+# hardcoded `hashlib.sha3_256()` calls, which made the type a label: changing it
+# renamed what the node claimed to be hashing with, and changed nothing about what it
+# actually computed.
+
+HashFactory = typing.Callable[[], typing.Any]
+
+_HASH_ALGORITHMS: typing.Dict[bytes, HashFactory] = {}
+
+
+def hash_type_of(factory: HashFactory) -> bytes:
+    """The identifier for a hash algorithm: that algorithm over the empty input."""
+    return factory().digest()
+
+
+def register_hash_algorithm(factory: HashFactory) -> HashFactory:
+    """Make an algorithm resolvable by its type, so artefacts labelled with it can be read.
+
+    A caller with an algorithm this library does not ship -- or a parameterised one
+    like blake2b at a digest size of its own -- registers the factory it wants
+    ( `functools.partial(hashlib.blake2b, digest_size=32)`, say ) and its type
+    follows from it.
+    """
+    _HASH_ALGORITHMS[hash_type_of(factory)] = factory
+    return factory
+
+
+def hasher_for(hash_type: bytes) -> HashFactory:
+    """The algorithm that produced `hash_type`, or an error.
+
+    Never a fallback to whatever this node is configured with: hashing with one
+    algorithm under another's name is the failure this registry exists to prevent.
+    """
+    try:
+        return _HASH_ALGORITHMS[hash_type]
+    except KeyError:
+        raise HashTypeError(
+            'bee-rpc: unknown hash type ' + hash_type.hex() + '. Register the algorithm '
+            'that produces it with register_hash_algorithm() before reading content '
+            'addressed by it.'
+        )
+
+
+for _factory in (
+        hashlib.sha3_256,
+        hashlib.sha3_512,
+        hashlib.sha256,
+        hashlib.sha512,
+        lambda: hashlib.blake2b(digest_size=32),
+        hashlib.blake2b,
+):
+    register_hash_algorithm(_factory)
+del _factory
+
+
 ## Enviroment ##
 
 class Enviroment(type):
@@ -94,7 +157,10 @@ class Enviroment(type):
     block_depth = 1
     skip_wbp_generation = False
     mem_manager = lambda len: MemManager(len=len)
-    hash_type: bytes = bytes.fromhex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")  # SHA3_256
+    # What this node hashes with, and the identifier that follows from it. SHA3_256
+    # by default; `modify_env(hash_factory=...)` changes both together.
+    hash_factory: HashFactory = hashlib.sha3_256
+    hash_type: bytes = hash_type_of(hashlib.sha3_256)
 
     def __call__(cls):
         if cls not in cls._instances:
@@ -105,19 +171,31 @@ class Enviroment(type):
 
 
 def modify_env(
-        cache_dir:           typing.Optional[str]        = None,
-        mem_manager:         typing.Optional[MemManager] = None,
-        hash_type:           typing.Optional[bytes]      = None,
-        block_depth:         typing.Optional[int]        = None,
-        block_dir:           typing.Optional[str]        = None,
-        skip_wbp_generation: bool                        = False
+        cache_dir:           typing.Optional[str]           = None,
+        mem_manager:         typing.Optional[MemManager]    = None,
+        hash_type:           typing.Optional[bytes]         = None,
+        hash_factory:        typing.Optional[HashFactory]   = None,
+        block_depth:         typing.Optional[int]           = None,
+        block_dir:           typing.Optional[str]           = None,
+        skip_wbp_generation: bool                           = False
 ):
+    """Configure the environment. `hash_factory` selects the algorithm blocks are
+    addressed by; `hash_type` selects one already registered, by its identifier."""
     if cache_dir: Enviroment.cache_dir = cache_dir + 'grpcbigbuffer/'
     if mem_manager: Enviroment.mem_manager = mem_manager
-    if hash_type and hash_type != Enviroment.hash_type:
-        Enviroment.hash_type = hash_type
+
+    if hash_factory:
+        register_hash_algorithm(hash_factory)
+    elif hash_type:
+        hash_factory = hasher_for(hash_type)
+
+    if hash_factory and hash_type_of(hash_factory) != Enviroment.hash_type:
+        Enviroment.hash_factory = hash_factory
+        Enviroment.hash_type = hash_type_of(hash_factory)
         # Si se modifica el algoritmo hash de los bloques, se pierde compatibilidad con el registro previo.
-        rmtree(Enviroment.block_dir)
+        if os.path.isdir(Enviroment.block_dir):
+            rmtree(Enviroment.block_dir)
+
     if block_depth: Enviroment.block_depth = block_depth
     if block_dir: Enviroment.block_dir = block_dir
     Enviroment.skip_wbp_generation = skip_wbp_generation

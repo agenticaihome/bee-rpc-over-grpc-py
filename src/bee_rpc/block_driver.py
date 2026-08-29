@@ -202,11 +202,12 @@ def generate_wbp_file(
 
     debug("Buffer loaded correctly")
     debug("Validate lenghts tree")
-    
-    if not validate_lengths_tree(blocks=blocks, file_list=file_list,
-                                 pointer_lengths=pointer_lengths):
-        debug("Failed on validate lengths")
-        exit() # TODO ??
+
+    # Raises rather than returning: a caller that cannot be told its object is
+    # unusable has no way to stop, retry or report, and the failure surfaces
+    # somewhere else entirely.
+    validate_lengths_tree(blocks=blocks, file_list=file_list,
+                          pointer_lengths=pointer_lengths, debug=debug)
 
     debug("Create lengths tree")
     tree: Dict[int, Union[Dict, str]] = create_lengths_tree(blocks)
