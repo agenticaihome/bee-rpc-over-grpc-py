@@ -189,6 +189,39 @@ class StoredAndOnTheWire(unittest.TestCase):
         expanded = b"".join(read_multiblock_directory(directory=directory, ignore_blocks=True))
         self.assertEqual(expanded, self._inlined(payload))
 
+    def test_leaving_the_types_out_changes_the_bytes_but_not_the_id(self):
+        """The property the compression rests on, and the reason it is safe to adopt.
+
+        A pointer is replaced by its block's content in the expansion, so what the
+        pointer itself looked like never reaches the hash. An object can therefore be
+        re-stored with its types inherited without renaming itself or anything that
+        points at it -- which for a service means the filesystem block and the service
+        id are unchanged by the saving.
+        """
+        payloads = [os.urandom(9000 + i) for i in range(3)]
+        hashes = [self._file_block(p)[0] for p in payloads]
+
+        def built(omit_types):
+            obj = buffer_pb2.Buffer()
+            for block_hash in hashes:
+                obj.block.hashes.add().value = block_pointer(
+                    block_id=block_hash, omit_types=omit_types).SerializeToString()
+            obj.chunk = b"tail content, after every pointer"
+            object_id, directory = block_builder.build_multiblock(
+                obj, blocks=hashes,
+                inherited=(Enviroment.hash_type,) if omit_types else None)
+            expansion = b"".join(read_multiblock_directory(
+                directory=directory, ignore_blocks=True))
+            return object_id, expansion, obj.ByteSize()
+
+        typed_id, typed_expansion, typed_size = built(omit_types=False)
+        inherited_id, inherited_expansion, inherited_size = built(omit_types=True)
+
+        self.assertEqual(typed_expansion, inherited_expansion)
+        self.assertEqual(typed_id, inherited_id)
+        # 34 bytes of repeated hash type per pointer, plus the varints that shrink.
+        self.assertLessEqual(inherited_size, typed_size - 3 * len(Enviroment.hash_type))
+
     def test_every_pointer_put_on_the_wire_carries_its_type(self):
         block_hash, pointer = self._file_block(os.urandom(9000))
         _, directory = block_builder.build_multiblock(
