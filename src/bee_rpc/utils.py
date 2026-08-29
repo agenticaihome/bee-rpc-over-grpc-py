@@ -151,16 +151,47 @@ def encode_bytes(n: int) -> bytes:
     return buf
 
 
+def entries_of_multiblock_directory(directory: str) -> typing.List[str]:
+    """The ordered list of paths a multiblock directory expands to.
+
+    The same shape as the `file_list` `block_driver.generate_wbp_file` builds:
+    the directory's own parts, interleaved with the blocks it points at.
+    """
+    with open(os.path.join(directory, METADATA_FILE_NAME), 'r') as f:
+        _json = json.load(f)
+    return [
+        os.path.join(directory, str(e)) if type(e) == int
+        else os.path.join(Enviroment.block_dir, e[0])
+        for e in _json
+    ]
+
+
+def seek_expanded_position(position: int, file_list: typing.List[str]) -> typing.Tuple[str, int]:
+    """Map a position in the expanded stream onto (single file, offset within it).
+
+    Every entry of `file_list` is measured by how much it contributes to the
+    expansion, which for a multiblock *directory* block is the sum of its own
+    expansion -- `os.path.getsize` would report the size of the dirent instead, a
+    couple of hundred bytes standing in for however much content the block holds,
+    silently shifting every position past it. And a position landing inside such a
+    block resolves against that block's own entries, to any depth, rather than
+    reaching an `open()` that would raise IsADirectoryError.
+    """
+    remaining: int = position
+    for path in file_list:
+        length: int = getsize(path)
+        if remaining < length:
+            if os.path.isdir(path):
+                return seek_expanded_position(remaining, entries_of_multiblock_directory(path))
+            return path, remaining
+        remaining -= length
+    raise ValueError(f"Position {position} is out of buffer range.")
+
+
 def get_varint_at_position(position, file_list) -> int:
-    file_size = sum(os.path.getsize(f) for f in file_list)
-    if position > file_size:
-        raise ValueError(f"Position {position} is out of buffer range.")
-    file_index = 0
-    while position > os.path.getsize(file_list[file_index]):
-        position -= os.path.getsize(file_list[file_index])
-        file_index += 1
-    with open(file_list[file_index], "rb") as file:
-        file.seek(position)
+    path, offset = seek_expanded_position(position=position, file_list=file_list)
+    with open(path, "rb") as file:
+        file.seek(offset)
         result = 0
         shift = 0
         while True:

@@ -5,7 +5,7 @@ from typing import Callable, Union, List, Tuple, Dict, Generator
 from bee_rpc.validate_lengths_tree import validate_lengths_tree
 from bee_rpc.buffer_pb2 import Buffer
 from bee_rpc.utils import BLOCK_LENGTH, METADATA_FILE_NAME, WITHOUT_BLOCK_POINTERS_FILE_NAME, Enviroment, \
-    create_lengths_tree, encode_bytes, get_varint_at_position, get_pruned_block_length
+    create_lengths_tree, encode_bytes, get_varint_at_position, get_pruned_block_length, getsize
 
 
 def compute_wbp_lengths(tree: Dict[int, Union[Dict, str]], file_list: List[str]) -> Dict[int, int]:
@@ -82,7 +82,11 @@ def set_varint_value(varint_pos: int, buffer: List[Union[bytes, str]], new_value
                 return
             offset += obj_size
         else:
-            offset += os.path.getsize(value)
+            # `varint_pos` is a position in the expanded stream, so a block entry
+            # advances the cursor by its whole expansion. A multiblock directory
+            # block measures as its dirent under `os.path.getsize`, which would put
+            # every varint after it at the wrong offset.
+            offset += getsize(value)
 
     raise Exception('gRPCbb block driver error on set varint value')
 

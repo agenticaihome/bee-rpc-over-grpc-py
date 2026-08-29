@@ -73,7 +73,20 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
                 debug("- yielding block init")
                 yield block
                 debug(f"yielded block init")
-                yield from read_block(block_id=block_id, debug=debug, ignore_blocks=ignore_blocks)
+                # The marker already names the block; what follows it on the wire is
+                # the block's *content*, always flat. A block that is itself a
+                # multiblock directory used to be expanded with ignore_blocks=False
+                # here, which emitted its sub-blocks' markers too -- carrying
+                # `previous_lengths_position` values that are offsets into the nested
+                # block's own stream, into a stream where they mean nothing. A
+                # receiver writes those straight to its `_.json`
+                # (client.save_chunks_to_block), producing metadata in two mixed
+                # coordinate systems that no length arithmetic can make sense of.
+                # Streaming flat keeps the nesting an implementation detail of
+                # whoever stores the block: the bytes are the same either way, and a
+                # directory block's id is the sha3_256 of exactly this expansion
+                # (block_builder.generate_id), so the receiver can verify it.
+                yield from read_block(block_id=block_id, debug=debug, ignore_blocks=True)
                 debug("- yielding block end")
                 yield block
                 debug(f"yielded block end")
