@@ -8,7 +8,7 @@ from typing import Callable, Generator, Union, Tuple
 
 from google.protobuf.message import DecodeError
 from bee_rpc import buffer_pb2
-from bee_rpc.utils import Signal, CHUNK_SIZE, METADATA_FILE_NAME, Enviroment
+from bee_rpc.utils import Signal, CHUNK_SIZE, METADATA_FILE_NAME, Enviroment, block_pointer
 
 
 def block_exists(block_id: str, is_dir: bool = False, debug: Callable[[str], None] = lambda s: None) -> bool|Tuple[bool, bool]:
@@ -66,10 +66,12 @@ def read_multiblock_directory(directory: str, delete_directory: bool = False, ig
                 debug(f"'gRPCbb error on block metadata file ( _.json ).' for block {block_id} on read_multiblock_directory")
                 raise Exception('gRPCbb error on block metadata file ( _.json ).')
             if not ignore_blocks:
-                block = buffer_pb2.Buffer.Block(
-                    hashes=[buffer_pb2.Buffer.Block.Hash(type=Enviroment.hash_type, value=bytes.fromhex(block_id))],
-                    previous_lengths_position=e[1]
-                )
+                # Fully typed, always: a stream has no surrounding structure a
+                # reader could consult, so an omitted hash type on the wire is
+                # simply unresolvable. Compression by inheritance is a property of
+                # storage, where the containing block is there to be asked.
+                block = block_pointer(block_id=block_id)
+                block.previous_lengths_position.extend(e[1])
                 debug("- yielding block init")
                 yield block
                 debug(f"yielded block init")

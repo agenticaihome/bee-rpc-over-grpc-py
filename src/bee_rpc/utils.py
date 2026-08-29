@@ -6,16 +6,23 @@ from threading import Condition
 
 import typing
 
+from bee_rpc import buffer_pb2
+
 # GrpcBigBuffer.
 CHUNK_SIZE = 1024 * 1024  # 1MB
 MAX_DIR = 999999999
 WITHOUT_BLOCK_POINTERS_FILE_NAME = 'wbp.bin'
 METADATA_FILE_NAME = '_.json'
-BLOCK_LENGTH = 36
+
+HashTypes = typing.Tuple[bytes, ...]
 
 
 class EmptyBufferException(Exception):
     pass
+
+
+class HashTypeError(Exception):
+    """A pointer's hash carries no type and none can be deduced for its index."""
 
 
 class Dir(object):
@@ -114,6 +121,135 @@ def modify_env(
     if block_depth: Enviroment.block_depth = block_depth
     if block_dir: Enviroment.block_dir = block_dir
     Enviroment.skip_wbp_generation = skip_wbp_generation
+
+
+## Hash types ##
+
+# A block pointer names its block by hash. Which algorithm produced that hash is
+# carried in `Buffer.Block.Hash.type` -- the digest of the algorithm applied to the
+# empty input, so the field is self-describing without a registry.
+#
+# On the wire that type is always present: a stream has no surrounding structure to
+# consult, so every pointer that goes out has to say what it is. In storage that
+# would mean repeating the same 32 bytes in every pointer of every block -- a
+# filesystem of a few thousand files pays it a few thousand times over for no
+# information -- so a stored pointer below the top may omit it and inherit.
+#
+# Inheritance is positional and follows the block-containment chain: hash `i` of a
+# pointer with no type of its own takes the type at index `i` from the nearest
+# ancestor that has one. Nearest wins per index individually, so an ancestor list
+# longer than the one below it still supplies the indices the nearer one does not
+# reach. An explicit type replaces its own entry only; it never shifts the mapping
+# for the entries beside it.
+#
+# The top of a stored tree has no ancestor, so it MUST carry its types. That is the
+# one rule that keeps a stored artefact readable by a node whose own configuration
+# differs -- `Enviroment.hash_type` says which algorithm this node *packs* with, and
+# is not an answer to what some other node's artefact was hashed with.
+
+
+def hash_types_for_packing() -> HashTypes:
+    """The hash types this node writes into the pointers it creates."""
+    return (Enviroment.hash_type,)
+
+
+def resolve_hash_types(
+        block: buffer_pb2.Buffer.Block,
+        inherited: typing.Optional[typing.Sequence[bytes]] = None
+) -> HashTypes:
+    """The type of every hash in `block`, taking `inherited` where the block omits one.
+
+    Raises HashTypeError rather than guessing: a pointer whose type cannot be
+    deduced names a block under an unknown algorithm, and resolving it to whatever
+    this node happens to be configured with would silently name different content.
+    """
+    inherited = tuple(inherited or ())
+    resolved: typing.List[bytes] = []
+    for index, _hash in enumerate(block.hashes):
+        if _hash.type:
+            resolved.append(_hash.type)
+        elif index < len(inherited) and inherited[index]:
+            resolved.append(inherited[index])
+        else:
+            raise HashTypeError(
+                'bee-rpc: hash %d of a block pointer carries no type and none can be '
+                'deduced from its ancestors (%d inherited type(s)). The top of a stored '
+                'tree must carry its hash types.' % (index, len(inherited))
+            )
+    return tuple(resolved)
+
+
+def inherit_hash_types(
+        resolved: typing.Sequence[bytes],
+        inherited: typing.Optional[typing.Sequence[bytes]] = None
+) -> HashTypes:
+    """The context that applies inside the block `resolved` points at.
+
+    The chain, not just the parent: an index the nearer pointer does not reach is
+    still answered by whatever ancestor last spoke for it.
+    """
+    inherited = tuple(inherited or ())
+    resolved = tuple(resolved)
+    return resolved + inherited[len(resolved):]
+
+
+def block_id_from_pointer(
+        block: buffer_pb2.Buffer.Block,
+        inherited: typing.Optional[typing.Sequence[bytes]] = None,
+        hexadecimal: bool = True
+) -> typing.Optional[typing.Union[str, bytes]]:
+    """The id this pointer names in the block registry, or None if it names none.
+
+    The registry is keyed by one algorithm -- `Enviroment.hash_type`, the directory
+    entries under `Enviroment.block_dir` -- so of however many names a pointer
+    carries, this returns the one that is a storage key. None means "not a pointer
+    to a block this node can address", which is the ordinary answer when probing
+    bytes that may just be content.
+    """
+    try:
+        types = resolve_hash_types(block=block, inherited=inherited)
+    except HashTypeError:
+        return None
+    for _hash, _type in zip(block.hashes, types):
+        if _type == Enviroment.hash_type:
+            return _hash.value.hex() if hexadecimal else _hash.value
+    return None
+
+
+def block_pointer(
+        block_id: typing.Union[str, bytes],
+        omit_types: bool = False
+) -> buffer_pb2.Buffer.Block:
+    """The pointer that stands in for a block, in the one encoding the library writes.
+
+    Single-hash, under the registry's own algorithm: a pointer built from an id
+    alone can only name the digest that id *is*. Callers holding more digests for
+    the same block build a longer pointer themselves; the first entry stays the
+    storage key.
+
+    `omit_types` writes the compressed form for a stored pointer that has an
+    ancestor to inherit from. Never use it for the top of a stored tree, and never
+    on the wire.
+    """
+    value = bytes.fromhex(block_id) if isinstance(block_id, str) else block_id
+    _hash = buffer_pb2.Buffer.Block.Hash(value=value)
+    if not omit_types:
+        _hash.type = Enviroment.hash_type
+    return buffer_pb2.Buffer.Block(hashes=[_hash])
+
+
+def block_pointer_length(
+        block_id: typing.Union[str, bytes],
+        omit_types: bool = False
+) -> int:
+    """How many bytes the pointer for this block occupies.
+
+    The one measure both sides of the wbp arithmetic must agree on: the length
+    written into a field's varint and the bytes then emitted in its place. They used
+    to be a constant (36) and a separately built message, free to drift -- and they
+    did, in opposite directions, once the two encodings diverged.
+    """
+    return len(block_pointer(block_id=block_id, omit_types=omit_types).SerializeToString())
 
 
 def create_lengths_tree(
@@ -237,9 +373,14 @@ def get_expanded_block_length(block_name: str, _seen: typing.Optional[typing.Set
         _seen.discard(block_name)
 
 
-def get_pruned_block_length(block_name: str) -> int:
-    """What a block pointer adds beyond the BLOCK_LENGTH bytes of the pointer itself."""
-    return get_expanded_block_length(block_name=block_name) - BLOCK_LENGTH
+def get_pruned_block_length(block_name: str, pointer_length: int) -> int:
+    """What a block pointer adds beyond the bytes of the pointer itself.
+
+    `pointer_length` is the length of the pointer *as it will be written*, which
+    depends on the digest and on whether the hash types are omitted -- so it is the
+    caller's to supply, not a constant to assume.
+    """
+    return get_expanded_block_length(block_name=block_name) - pointer_length
 
 def getsize(path: str, _seen: typing.Optional[typing.Set[str]] = None) -> int:
     if not os.path.exists(path): 

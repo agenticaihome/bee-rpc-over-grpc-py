@@ -15,7 +15,8 @@ from google.protobuf.descriptor import FieldDescriptor
 from bee_rpc import buffer_pb2
 from bee_rpc.block_driver import generate_wbp_file, WITHOUT_BLOCK_POINTERS_FILE_NAME, METADATA_FILE_NAME
 from bee_rpc.reader import read_block, read_multiblock_directory, read_from_registry, block_exists, read_bee_file
-from bee_rpc.utils import Enviroment, MAX_DIR, Signal, EmptyBufferException, Dir, CHUNK_SIZE
+from bee_rpc.utils import Enviroment, MAX_DIR, Signal, EmptyBufferException, Dir, CHUNK_SIZE, \
+    block_id_from_pointer
 
 
 ## Block driver ##
@@ -43,7 +44,8 @@ def contain_blocks(message: Message) -> bool:
     return False
 
 
-def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
+def copy_block_if_exists(buffer: bytes, directory: str,
+                         inherited: typing.Optional[typing.Sequence[bytes]] = None) -> bool:
     try:
         block = buffer_pb2.Buffer.Block()
         with warnings.catch_warnings():
@@ -52,19 +54,17 @@ def copy_block_if_exists(buffer: bytes, directory: str) -> bool:
     except DecodeError:
         return False
 
-    # Resolve the block id. Blocks produced by create_block()/build_multiblock()
-    # carry a single hash of type Enviroment.hash_type (see block_builder.py), which
-    # is what every other get_hash_from_block() call site resolves (internal_block=False).
-    # Only this function used internal_block=True, which matches a single hash of the
-    # empty type (b'') exclusively — a shape nothing in the library ever produces. As a
-    # result copy_block_if_exists() always returned None here for real block pointers,
-    # returned False, and callers silently wrote the 36-byte pointer as file content,
-    # corrupting large binaries. Try the internal (type=b'') form first for backwards
-    # compatibility, then fall back to the standard hash-typed form.
-    block_id: typing.Optional[str] = (
-        get_hash_from_block(block=block, internal_block=True)
-        or get_hash_from_block(block=block, internal_block=False)
-    )
+    # Resolve the block id under the hash-type rule (see utils): the pointer's own
+    # types where it states them, the enclosing block's where it does not. `inherited`
+    # is that context; None means these bytes come from the top of a stored tree,
+    # where a pointer must state its own. A None answer is the ordinary one for a
+    # field that was never a pointer -- this is called on every file of a filesystem.
+    block_id: typing.Optional[str] = block_id_from_pointer(block=block, inherited=inherited)
+    if not block_id:
+        # Artefacts written before the top of a tree was required to carry its types:
+        # a single hash of the empty type, meaning "whatever this node addresses
+        # blocks with". Kept so an already-stored service still builds.
+        block_id = get_hash_from_block(block=block, internal_block=True)
     if not block_id:
         return False
 
@@ -250,7 +250,11 @@ def save_chunks_to_block(
 ):
     try:
         debug("Save chunks to block ...")
-        block_id: str = get_hash_from_block(block_buffer.block)
+        block_id: typing.Optional[str] = block_id_from_pointer(block_buffer.block)
+        if not block_id:
+            raise Exception(
+                'gRPCbb: a block marker arrived without a resolvable hash type. Every '
+                'pointer on the wire must carry its own.')
         debug(f"Save chunks to block {block_id} start")
         if _json:
             _json.append(

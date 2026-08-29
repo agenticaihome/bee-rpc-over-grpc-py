@@ -37,8 +37,8 @@ from bee_rpc.block_builder import get_hash
 from bee_rpc.block_driver import generate_wbp_file
 from bee_rpc.reader import read_multiblock_directory, block_exists
 from bee_rpc.utils import modify_env, Enviroment, get_expanded_block_length, \
-    get_varint_at_position, seek_expanded_position, METADATA_FILE_NAME, \
-    WITHOUT_BLOCK_POINTERS_FILE_NAME
+    get_varint_at_position, seek_expanded_position, block_pointer_length, \
+    METADATA_FILE_NAME, WITHOUT_BLOCK_POINTERS_FILE_NAME
 from bee_rpc.validate_lengths_tree import validate_lengths_tree
 
 
@@ -161,14 +161,16 @@ class NestedBlockOverTheWire(unittest.TestCase):
         self.assertEqual([e[0] for e in _json if not isinstance(e, int)],
                          [inner_name, tail_name])
 
-        blocks, file_list = {}, []
+        blocks, file_list, pointer_lengths = {}, [], {}
         for e in _json:
             if isinstance(e, int):
                 file_list.append(os.path.join(received, str(e)))
             else:
                 file_list.append(os.path.join(self.blocks, e[0]))
                 blocks.setdefault(e[0], []).append(e[1])
-        self.assertTrue(validate_lengths_tree(blocks=blocks, file_list=file_list))
+                pointer_lengths[e[1][-1]] = block_pointer_length(block_id=e[0])
+        self.assertTrue(validate_lengths_tree(blocks=blocks, file_list=file_list,
+                                              pointer_lengths=pointer_lengths))
 
         generate_wbp_file(received)
         self.assertTrue(os.path.isfile(
