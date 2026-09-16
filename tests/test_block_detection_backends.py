@@ -125,14 +125,17 @@ class PackWithBlockBackends(unittest.TestCase):
         ptr, _raw, blocks = self._build_with_blocks()
         original = block_builder.search_on_message
 
-        def crippled_search(message, pointers, initial_position, blocks, container):
-            # Reproduce the pre-fix miss: never descend into repeated-message fields.
-            from google.protobuf.descriptor import FieldDescriptor
-            for field, value in message.ListFields():
-                if field.label == FieldDescriptor.LABEL_REPEATED and \
-                        field.type == FieldDescriptor.TYPE_MESSAGE:
-                    continue
-            # container intentionally left empty
+        def crippled_search(message, pointers, initial_position, blocks, container,
+                            *args, **kwargs):
+            # Reproduce the pre-fix miss: the repeated-message field is never
+            # descended into, so `container` is left empty while `blocks` holds N
+            # hashes -- exactly the state the guard exists to reject.
+            #
+            # Deliberately does not touch the descriptor API: `field.label` is gone
+            # in protobuf 7 (#6) and reading it here would make this test fail with
+            # that AttributeError instead of the guard's message. `*args/**kwargs`
+            # keep the stub valid as the real signature grows (#7 adds `inherited`).
+            return
 
         block_builder.search_on_message = crippled_search
         try:
