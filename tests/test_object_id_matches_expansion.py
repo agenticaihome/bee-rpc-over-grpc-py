@@ -23,7 +23,7 @@ import unittest
 
 from bee_rpc import block_builder, buffer_pb2
 from bee_rpc.reader import read_multiblock_directory
-from bee_rpc.utils import modify_env
+from bee_rpc.utils import modify_env, block_pointer
 
 
 class ObjectIdMatchesExpansion(unittest.TestCase):
@@ -96,10 +96,13 @@ class ObjectIdMatchesExpansion(unittest.TestCase):
         shutil.move(inner_dir.rstrip(os.sep),
                     os.path.join(self.blocks, inner_id.hex()))
 
+        # The pointer is built typed, via the library's own encoder. At the top of an
+        # object there is no ancestor to inherit a hash type from, so an untyped
+        # pointer is not recognised as one (`block_id_from_pointer` -> None) and the
+        # directory block is never expanded -- this test used to build it that way and
+        # so passed without exercising the expansion path it names.
         outer = buffer_pb2.Buffer()
-        outer.chunk = buffer_pb2.Buffer.Block(
-            hashes=[buffer_pb2.Buffer.Block.Hash(value=inner_id)]
-        ).SerializeToString()
+        outer.chunk = block_pointer(block_id=inner_id).SerializeToString()
         self._assert_id_is_the_expansion(outer, [inner_id])
 
 
